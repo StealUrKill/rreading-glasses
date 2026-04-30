@@ -150,17 +150,37 @@ func (b *Bust) Run() error {
 	return err
 }
 
+// We are picking a GOMEMLIMIT ratio based on the detected memory limit.
+// Small containers need proportionally more headroom for transient allocations during scrape bursts; large hosts can use the full default.
+func autoRatio(limitBytes uint64) float64 {
+	const MB = uint64(1) << 20
+	switch {
+	case limitBytes == 0:
+		return 0.85
+	case limitBytes < 192*MB:
+		return 0.45
+	case limitBytes < 256*MB:
+		return 0.50
+	case limitBytes < 512*MB:
+		return 0.65
+	case limitBytes < 1024*MB:
+		return 0.75
+	default:
+		return 0.85
+	}
+}
+
 func init() {
-	// Limit our memory to 90% of what's free. This affects cache sizes.
+	provider := memlimit.ApplyFallback(memlimit.FromCgroup, memlimit.FromSystem)
+
+	// Probe the limit so we can size the ratio appropriately. Failures here fall through to the default ratio.
+	limit, _ := provider()
+	ratio := autoRatio(limit)
+
 	_, err := memlimit.SetGoMemLimitWithOpts(
-		memlimit.WithRatio(0.85),
+		memlimit.WithRatio(ratio),
 		memlimit.WithLogger(slog.Default()),
-		memlimit.WithProvider(
-			memlimit.ApplyFallback(
-				memlimit.FromCgroup,
-				memlimit.FromSystem,
-			),
-		),
+		memlimit.WithProvider(provider),
 	)
 	if err != nil {
 		panic(err)

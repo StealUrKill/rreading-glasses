@@ -53,7 +53,7 @@ func NewPersister(ctx context.Context, cache cache[[]byte], dsn string) (*Persis
 
 // Persist records an author's refresh as in-flight.
 func (p *Persister) Persist(ctx context.Context, authorID int64, bytes []byte) error {
-	p.cache.Set(ctx, refreshAuthorKey(authorID), bytes, 365*24*time.Hour)
+	p.cache.Set(ctx, refreshAuthorKey(authorID), bytes, 24*time.Hour)
 	return nil
 }
 

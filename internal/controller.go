@@ -13,6 +13,7 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"slices"
 	"strings"
 	"sync"
@@ -185,10 +186,32 @@ func NewController(cache cache[[]byte], getter getter, persister persister, reg 
 		c.persister = persister
 	}
 
-	c.refreshG.SetLimit(30)
-	c.workG.SetLimit(25) // Sure why not.
+	r, w := autoConcurrency()
+	c.refreshG.SetLimit(r)
+	c.workG.SetLimit(w)
 
 	return c, nil
+}
+
+// autoConcurrency scales worker pool sizes to the active GOMEMLIMIT so memory-constrained hosts don't fan out 30 concurrent HTML parses and OOM.
+// Assumes GOMEMLIMIT has already been set (see cmd.init()).
+func autoConcurrency() (refresh, work int) {
+	limit := debug.SetMemoryLimit(-1)
+	const MB = int64(1) << 20
+	switch {
+	case limit <= 0:
+		return 30, 25
+	case limit < 96*MB:
+		return 2, 2
+	case limit < 192*MB:
+		return 4, 4
+	case limit < 384*MB:
+		return 8, 8
+	case limit < 768*MB:
+		return 15, 12
+	default:
+		return 30, 25
+	}
 }
 
 // GetBook loads a book (edition) or returns a cached value if one exists.
@@ -772,6 +795,7 @@ func (c *Controller) Run(ctx context.Context) {
 		for _, authorID := range authorIDs {
 			Log(ctx).Debug("resuming author refresh", "authorID", authorID)
 			c.refreshC <- refreshAuthor{id: authorID}
+			time.Sleep(100 * time.Millisecond)
 		}
 	}()
 
