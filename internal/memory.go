@@ -2,6 +2,7 @@ package internal
 
 import (
 	"context"
+	"math"
 	"runtime/debug"
 	"time"
 
@@ -10,18 +11,43 @@ import (
 
 var _ cache[[]byte] = (*memoryCache)(nil)
 
-// newMemoryCache returns a new in-memory cache.
+// newMemoryCache returns a new in-memory cache sized relative to GOMEMLIMIT.
 func newMemoryCache() cache[[]byte] {
+	maxCost, numCounters := cacheSizing(debug.SetMemoryLimit(-1))
+
 	r, err := ristretto.NewCache(&ristretto.Config[string, []byte]{
-		NumCounters: 4e6,                          // Track LRU for up to 4M keys which is ~10x in-memory items.
-		MaxCost:     debug.SetMemoryLimit(-1) / 2, // Use 50% of available memory.
-		BufferItems: 64,                           // Number of keys per Get buffer.
+		NumCounters: numCounters,
+		MaxCost:     maxCost,
+		BufferItems: 64, // Number of keys per Get buffer.
 	})
 	if err != nil {
 		panic(err)
 	}
 
 	return &memoryCache{r}
+}
+
+// cacheSizing derives ristretto's value budget (MaxCost) and admission counter
+// count (NumCounters) from GOMEMLIMIT.
+func cacheSizing(limit int64) (maxCost, numCounters int64) {
+	// On hosts with no memory limit SetMemoryLimit returns math.MaxInt64. Fall
+	// back to a fixed budget rather than an effectively unbounded cache.
+	if limit <= 0 || limit >= math.MaxInt64/4 {
+		maxCost = 64 << 20
+	} else {
+		maxCost = limit / 6
+	}
+
+	const estAvgItemBytes = 2 << 10
+	numCounters = (maxCost / estAvgItemBytes) * 10
+	if numCounters < 1<<14 {
+		numCounters = 1 << 14
+	}
+	if numCounters > 4_000_000 {
+		numCounters = 4_000_000
+	}
+
+	return maxCost, numCounters
 }
 
 type memoryCache struct {
